@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolvePointer, makePrompt, messageText, pointerIndex } from '../src/pointer.mjs';
-import { startWorker, eventReader } from '../src/runner.mjs';
+import { startWorker, eventReader, completionText } from '../src/runner.mjs';
 const user = (id, content) => ({ type: 'message', id, message: { role: 'user', content } });
 const branch = [user('first', 'original request'), user('last', 'a😀bc')];
 
@@ -52,6 +52,15 @@ test('JSONL handles chunk boundaries, Unicode separators, oversized records, and
   read('{"text":"a\u2028'); read('b"}\r\nnot json\n');
   read('x'.repeat(90)); read('\n{"ok":true}\n');
   assert.deepEqual(events, [{ text: 'a\u2028b' }, { ok: true }]);
+});
+
+test('completion callbacks contain only status and child log pointer', () => {
+  for (const status of ['finished', 'failed', 'cancelled', 'incomplete']) {
+    assert.equal(completionText({ status, sessionFile: '/private/child.jsonl', stderrFile: '/private/stderr.log' }),
+      `${status}: /private/child.jsonl`);
+  }
+  assert.equal(completionText({ status: 'failed', stderrFile: '/private/stderr.log' }),
+    'failed: no session log; diagnostics: /private/stderr.log');
 });
 
 for (const [mode, status] of [['normal', 'finished'], ['error', 'failed'], ['exit', 'failed'], ['wait', 'cancelled']]) {

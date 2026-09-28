@@ -75,10 +75,23 @@ extensions. Pi defaults are not necessarily the parent's currently selected mode
 
 Child sessions and stderr are retained locally under
 `<agent-dir>/delegate-runs/<worker-id>/` (normally `~/.pi/agent/delegate-runs/`).
-These files can contain private data; nothing is uploaded. Completion messages
-link to the child session instead of copying its output into the parent.
+These files can contain private data; nothing is uploaded. Each worker gets a
+separate `.jsonl` session file. Its first user message holds the original parent
+log/message/range pointer; the rest records the worker's investigation, actions,
+and final response. The file alone identifies the run—no start/stop offsets or
+second task reference are needed.
+
+On exit, the extension wakes the parent with a minimal follow-up callback:
+
+```text
+finished: /absolute/path/to/child-session.jsonl
+```
+
+Failure, cancellation, and incomplete runs retain their respective status. If
+Pi exits before creating a session log, the callback points to stderr instead.
+A failure to spawn Pi is returned immediately as a tool error. No task text, worker summary, or repeated instructions are included.
 A finished process is not proof of task success: its final response may report
-a blocker. The parent receives a follow-up notification and can read that result.
+a blocker. The parent can read the referenced log to review the result.
 
 Children inherit `PI_DELEGATE_CHILD=1`, which disables this extension inside them.
 The fixed worker instruction also forbids further delegation. This is not a

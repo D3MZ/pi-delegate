@@ -90,6 +90,14 @@ test('live: default handoff leaves parent available and wakes it on completion',
   assert.equal(p.events.filter(isDelegateEnd).length, 1, 'no polling or re-delegation loop');
   const launch = p.events.find(isDelegateEnd);
   const completion = p.events.find(isCompletion);
+  const log = completion.message.details.sessionFile;
+  assert.equal(completion.message.content, `finished: ${log}`);
+  const childEntries = readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  const task = childEntries.find(entry => entry.type === 'message' && entry.message.role === 'user');
+  const taskText = typeof task.message.content === 'string' ? task.message.content
+    : task.message.content.filter(block => block.type === 'text').map(block => block.text).join('\n');
+  assert.ok(taskText.includes(JSON.stringify(launch.result.details.pointer)), 'child log links back to exact source assignment');
+  assert.ok(!taskText.includes('POINTER_E2E_OK'), 'task text was not copied into the handoff');
   assert.ok(p.events.filter(event => event.type === 'tool_execution_start'
     && event.receivedAt > launch.receivedAt && event.receivedAt < completion.receivedAt).length === 0,
   'no monitoring tools between launch and completion');

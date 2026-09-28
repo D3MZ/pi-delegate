@@ -3,7 +3,7 @@ import { getAgentDir, type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { join } from 'node:path';
 import { access } from 'node:fs/promises';
 import { pointerIndex, resolvePointer } from './pointer.mjs';
-import { startWorker } from './runner.mjs';
+import { completionText, startWorker } from './runner.mjs';
 
 export default function (pi: ExtensionAPI) {
   // Inherited by native child processes: never register this tool or delegation policy there.
@@ -41,7 +41,7 @@ export default function (pi: ExtensionAPI) {
   pi.on('before_agent_start', () => ({
     message: {
       customType: 'pi-delegate-policy', display: false,
-      content: enabled
+      content: (enabled
         ? 'Delegation mode is ON. For user requests to execute work, invoke delegate with no task text. ' +
           'For the current request call delegate({}) without messageId. Use real log IDs from the pointer index, never model-generated conversation IDs, for earlier requests. ' +
           'Use optional start/end for separate portions. ' +
@@ -49,7 +49,10 @@ export default function (pi: ExtensionAPI) {
           'After launching, yield and remain available. Do not poll, wait, monitor workers, or duplicate their work. ' +
           'Use completion notifications. Delegate follow-up execution only when the user requests it. ' +
           'Multiple calls share the working directory; do not assign overlapping edits. Never auto-redelegate a completion notification.'
-        : 'Delegation mode is OFF. Work directly; do not invoke delegate or substitute another delegation tool.',
+        : 'Delegation mode is OFF. Work directly; do not invoke delegate or substitute another delegation tool.') +
+        ' A pi-delegate-result callback contains only process status and a child session log pointer. ' +
+        'That log contains the source task pointer and work. Read its final response for the result or blocker. ' +
+        'Finished does not mean verified success. Never automatically delegate a callback.',
     },
   }));
 
@@ -100,10 +103,7 @@ export default function (pi: ExtensionAPI) {
         if (shuttingDown || ctx.sessionManager.getSessionFile() !== origin) return;
         pi.sendMessage({
           customType: 'pi-delegate-result', display: true, details: result,
-          content: `Delegate ${result.id}: ${result.status}. ` +
-            `Child session: ${result.sessionFile ?? 'not created'}. Diagnostics: ${result.stderrFile}. ` +
-            'This is a process outcome, not a claim that the task passed verification. ' +
-            'Read the child final response for its result or blocker; do not automatically spawn another worker.',
+          content: completionText(result),
         }, { triggerTurn: true, deliverAs: 'followUp' });
       }).catch(error => {
         if (!shuttingDown) ctx.ui.notify(`Delegation notification failed: ${String(error)}`, 'error');

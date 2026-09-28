@@ -23,6 +23,12 @@ export function eventReader(onEvent, maxLength = 8 * 1024 * 1024) {
   };
 }
 
+export function completionText(result) {
+  return result.sessionFile
+    ? `${result.status}: ${result.sessionFile}`
+    : `${result.status}: no session log; diagnostics: ${result.stderrFile}`;
+}
+
 export async function startWorker({ cwd, root, pointer, command = 'pi', prefix = [], env = process.env }) {
   const id = randomUUID();
   const directory = join(root, id);

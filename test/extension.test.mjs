@@ -62,6 +62,8 @@ test('Pi loader, global mode, pointer-only tool, notification, shutdown, and chi
     assert.ok(!JSON.stringify(result).includes('private synthetic task text'));
     const { message, options } = await notification;
     assert.equal(message.details.status, 'finished');
+    assert.equal(message.content, `finished: ${message.details.sessionFile}`);
+    assert.ok(!message.content.includes('private synthetic task text'));
     assert.equal(options.deliverAs, 'followUp');
     assert.equal(options.triggerTurn, true);
     // Multiple calls can address disjoint portions of an earlier request.
