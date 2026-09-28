@@ -1,6 +1,6 @@
 {
   "name": "pi-delegate",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Pointer-only background delegation for Pi",
   "type": "module",
   "license": "MIT",
@@ -13,6 +13,9 @@
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*"
   },
-  "scripts": { "test": "node --test test/*.test.mjs" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "test:live": "PI_DELEGATE_LIVE=1 node --test test/live.test.mjs"
+  },
   "engines": { "node": ">=22" }
 }

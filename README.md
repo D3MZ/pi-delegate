@@ -44,8 +44,15 @@ reviews remain in the parent conversation.
 ## Pointer contract
 
 `messageId` identifies the top-level `id` of a **user-message entry on the active
-branch**, not an ID inside its `message` object. Without it, the latest user
-message is used. The parent session must already be persisted.
+branch**, not an ID inside its `message` object or a model-generated conversation
+label. For the current request, use `delegate({})` without specifying an ID.
+The parent session must already be persisted.
+
+The extension supplies a context-only index of the last 32 user messages' real
+log IDs, ordinal positions, timestamps, and text lengths, plus the session path
+for looking up older messages. This is mechanical metadata: no task text or
+summaries are copied, and the index is not appended to the saved conversation.
+It refreshes for each model request, including queued follow-ups.
 
 Supply both `start` and `end`, or neither. Offsets are zero-based Unicode code
 points, end-exclusive, over text blocks joined with `\n`. For example, the emoji
@@ -93,5 +100,15 @@ PI_DELEGATE_PI_PACKAGE=/path/to/node_modules/@earendil-works/pi-coding-agent npm
 pi -e ./src/extension.ts
 ```
 
-Tests use synthetic logs and native fixture subprocesses, without credentials or
-model calls. MIT licensed.
+The default tests use synthetic logs and native fixture subprocesses without
+credentials or model calls. To exercise the globally installed extension with
+real parent and worker models (uses your normal credentials and incurs usage):
+
+```sh
+npm run test:live
+```
+
+Live tests create temporary workspaces outside the checkout. They verify that
+the parent answers during background work, resumes on completion without polling,
+and launches two workers using ranges of an earlier message. Synthetic session
+logs and diagnostics stay local; paths are printed for inspection. MIT licensed.

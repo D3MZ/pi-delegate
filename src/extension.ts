@@ -2,7 +2,7 @@ import { Type } from '@earendil-works/pi-ai';
 import { getAgentDir, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { join } from 'node:path';
 import { access } from 'node:fs/promises';
-import { resolvePointer } from './pointer.mjs';
+import { pointerIndex, resolvePointer } from './pointer.mjs';
 import { startWorker } from './runner.mjs';
 
 export default function (pi: ExtensionAPI) {
@@ -24,12 +24,27 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
+  // Refresh on every model request, including queued follow-ups. Context-only metadata
+  // avoids copying task text or appending an index to the persisted conversation.
+  pi.on('context', (event, ctx) => {
+    if (!enabled) return;
+    return { messages: [...event.messages, {
+      role: 'custom' as const, customType: 'pi-delegate-pointers', display: false,
+      content: 'Delegation pointer index (real JSONL entry IDs, not model-generated conversation IDs). ' +
+        'For the current request use delegate({}); only use messageId for an earlier request. ' +
+        'For older entries beyond this index, inspect sessionFile. No task text is included.\n' +
+        JSON.stringify(pointerIndex(ctx.sessionManager.getSessionFile(), ctx.sessionManager.getBranch())),
+      timestamp: Date.now(),
+    }] };
+  });
+
   pi.on('before_agent_start', () => ({
     message: {
       customType: 'pi-delegate-policy', display: false,
       content: enabled
         ? 'Delegation mode is ON. For user requests to execute work, invoke delegate with no task text. ' +
-          'Omit arguments to assign the latest user message; use messageId and optional start/end to assign earlier requests or separate portions. ' +
+          'For the current request call delegate({}) without messageId. Use real log IDs from the pointer index, never model-generated conversation IDs, for earlier requests. ' +
+          'Use optional start/end for separate portions. ' +
           'Discuss questions and review feedback here; do not spawn for conversation alone. ' +
           'After launching, yield and remain available. Do not poll, wait, monitor workers, or duplicate their work. ' +
           'Use completion notifications. Delegate follow-up execution only when the user requests it. ' +
@@ -58,7 +73,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerTool({
     name: 'delegate', label: 'Delegate',
-    description: 'Spawn a background Pi worker using only a pointer into this session. No arguments means the latest user message. ' +
+    description: 'Spawn a background Pi worker using only a pointer into this session. For the current request call delegate({}), without messageId. ' +
       'Returns immediately; completion is notified automatically. No task text or polling. ' +
       'Workers share this cwd; assign disjoint work. messageId is a top-level session entry ID on the active branch.',
     parameters: Type.Object({

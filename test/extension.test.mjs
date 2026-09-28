@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -37,13 +37,22 @@ test('Pi loader, global mode, pointer-only tool, notification, shutdown, and chi
       sessionManager: { getBranch: () => branch, getSessionFile: () => sessionFile } };
     loaded.runtime.appendEntry = (customType, data) => branch.push({ type: 'custom', customType, data, id: 'mode' });
     let notifyResolve;
+    const results = [];
     const notification = new Promise(resolve => { notifyResolve = resolve; });
-    loaded.runtime.sendMessage = (message, options) => notifyResolve({ message, options });
+    loaded.runtime.sendMessage = (message, options) => {
+      results.push(message.details);
+      notifyResolve({ message, options });
+    };
     const emit = async name => { for (const fn of extension.handlers.get(name) ?? []) await fn({}, ctx); };
     await emit('session_start');
     const command = extension.commands.get('delegation').handler;
     const tool = extension.tools.get('delegate').definition;
+    const context = extension.handlers.get('context')[0];
+    const indexed = context({ messages: [] }, ctx);
+    assert.match(indexed.messages[0].content, /"messageId":"request"/);
+    assert.ok(!indexed.messages[0].content.includes('private synthetic task text'));
     await command('off', ctx);
+    assert.equal(context({ messages: [] }, ctx), undefined);
     await assert.rejects(tool.execute('t', {}, undefined, undefined, ctx), /off/);
     await emit('session_start'); // Restores persisted off mode.
     await assert.rejects(tool.execute('t', {}, undefined, undefined, ctx), /off/);
@@ -55,6 +64,29 @@ test('Pi loader, global mode, pointer-only tool, notification, shutdown, and chi
     assert.equal(message.details.status, 'finished');
     assert.equal(options.deliverAs, 'followUp');
     assert.equal(options.triggerTurn, true);
+    // Multiple calls can address disjoint portions of an earlier request.
+    branch.push({ type: 'message', id: 'newer', message: { role: 'user', content: 'A newer request.' } });
+    const concurrentDone = new Promise(resolve => {
+      loaded.runtime.sendMessage = message => {
+        results.push(message.details);
+        if (results.length === 3) resolve();
+      };
+    });
+    const assignments = await Promise.all([
+      tool.execute('range1', { messageId: 'request', start: 0, end: 7 }, undefined, undefined, ctx),
+      tool.execute('range2', { messageId: 'request', start: 8, end: 17 }, undefined, undefined, ctx),
+    ]);
+    assert.notEqual(assignments[0].details.id, assignments[1].details.id);
+    await concurrentDone;
+    for (let i = 0; i < assignments.length; i++) {
+      const pointer = assignments[i].details.pointer;
+      assert.equal(pointer.messageId, 'request');
+      assert.equal(pointer.contextLeafId, 'newer');
+      const completion = results.find(result => result.id === assignments[i].details.id);
+      const fixture = JSON.parse(readFileSync(completion.sessionFile, 'utf8'));
+      assert.ok(fixture.args.at(-1).includes(JSON.stringify(pointer)));
+      assert.ok(!fixture.args.at(-1).includes('private synthetic task text'));
+    }
     process.env.FIXTURE_MODE = 'wait';
     const pending = await tool.execute('t2', {}, undefined, undefined, ctx);
     assert.ok(pending.details.id);
