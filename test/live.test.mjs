@@ -122,11 +122,15 @@ test('live: off/on and two workers assigned earlier-message character ranges', o
   const start1 = Array.from(prefix).length, end1 = start1 + Array.from(first).length;
   const start2 = end1 + 1, end2 = start2 + Array.from(second).length;
   const done = p.wait(event => event.type === 'agent_settled' && p.events.filter(isCompletion).length === 2);
-  await p.prompt(`Now execute those two tasks from my earlier message. Use its real log ID from the pointer index. ` +
+  await p.prompt(`Now execute those two tasks from my earlier message. Look up its real top-level user-entry ID in the session log. ` +
     `Spawn one worker for start ${start1}, end ${end1}, and another for start ${start2}, end ${end2}. ` +
     'Call delegate twice and return without waiting or polling. Do not create the files yourself.');
   await done;
   const calls = p.events.filter(event => event.type === 'tool_execution_start' && event.toolName === 'delegate');
+  const lookup = p.events.slice(0, p.events.indexOf(calls[0])).find(event =>
+    event.type === 'tool_execution_start' && event.toolName !== 'delegate'
+      && JSON.stringify(event.args).includes(file));
+  assert.ok(lookup, 'parent looked up the earlier ID in the log on demand');
   assert.deepEqual(calls.map(event => event.args).sort((a, b) => a.start - b.start), [
     { messageId: target.id, start: start1, end: end1 }, { messageId: target.id, start: start2, end: end2 },
   ]);

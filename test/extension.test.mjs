@@ -47,12 +47,16 @@ test('Pi loader, global mode, pointer-only tool, notification, shutdown, and chi
     await emit('session_start');
     const command = extension.commands.get('delegation').handler;
     const tool = extension.tools.get('delegate').definition;
-    const context = extension.handlers.get('context')[0];
-    const indexed = context({ messages: [] }, ctx);
-    assert.match(indexed.messages[0].content, /"messageId":"request"/);
-    assert.ok(!indexed.messages[0].content.includes('private synthetic task text'));
+    assert.equal(extension.handlers.has('context'), false, 'no per-request message index');
+    const policy = extension.handlers.get('before_agent_start')[0]({}, {
+      ...ctx, sessionManager: { ...ctx.sessionManager,
+        getBranch: () => { throw new Error('Policy must not enumerate messages'); } },
+    }).message.content;
+    assert.ok(policy.includes(JSON.stringify(sessionFile)));
+    assert.match(policy, /top-level user-entry ID/);
+    assert.ok(!policy.includes('private synthetic task text'));
+    assert.ok(!policy.includes('"messageId":"request"'));
     await command('off', ctx);
-    assert.equal(context({ messages: [] }, ctx), undefined);
     await assert.rejects(tool.execute('t', {}, undefined, undefined, ctx), /off/);
     await emit('session_start'); // Restores persisted off mode.
     await assert.rejects(tool.execute('t', {}, undefined, undefined, ctx), /off/);

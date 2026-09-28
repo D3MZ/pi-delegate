@@ -2,7 +2,7 @@ import { Type } from '@earendil-works/pi-ai';
 import { getAgentDir, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { join } from 'node:path';
 import { access } from 'node:fs/promises';
-import { pointerIndex, resolvePointer } from './pointer.mjs';
+import { resolvePointer } from './pointer.mjs';
 import { completionText, startWorker } from './runner.mjs';
 
 export default function (pi: ExtensionAPI) {
@@ -24,26 +24,13 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  // Refresh on every model request, including queued follow-ups. Context-only metadata
-  // avoids copying task text or appending an index to the persisted conversation.
-  pi.on('context', (event, ctx) => {
-    if (!enabled) return;
-    return { messages: [...event.messages, {
-      role: 'custom' as const, customType: 'pi-delegate-pointers', display: false,
-      content: 'Delegation pointer index (real JSONL entry IDs, not model-generated conversation IDs). ' +
-        'For the current request use delegate({}); only use messageId for an earlier request. ' +
-        'For older entries beyond this index, inspect sessionFile. No task text is included.\n' +
-        JSON.stringify(pointerIndex(ctx.sessionManager.getSessionFile(), ctx.sessionManager.getBranch())),
-      timestamp: Date.now(),
-    }] };
-  });
-
-  pi.on('before_agent_start', () => ({
+  pi.on('before_agent_start', (_event, ctx) => ({
     message: {
       customType: 'pi-delegate-policy', display: false,
       content: (enabled
         ? 'Delegation mode is ON. For user requests to execute work, invoke delegate with no task text. ' +
-          'For the current request call delegate({}) without messageId. Use real log IDs from the pointer index, never model-generated conversation IDs, for earlier requests. ' +
+          'Omit messageId for the latest request; for an earlier message, read the session log and use its top-level user-entry ID, which delegate validates. ' +
+          `Session log: ${JSON.stringify(ctx.sessionManager.getSessionFile() ?? null)}. ` +
           'Use optional start/end for separate portions. ' +
           'Discuss questions and review feedback here; do not spawn for conversation alone. ' +
           'After launching, yield and remain available. Do not poll, wait, monitor workers, or duplicate their work. ' +

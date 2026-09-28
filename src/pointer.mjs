@@ -5,22 +5,6 @@ export function messageText(content) {
     .filter(block => block.type === 'text').map(block => block.text).join('\n');
 }
 
-// Mechanical metadata only: never summarize or copy the user's task into a handoff.
-export function pointerIndex(sessionFile, branch, limit = 32) {
-  const users = branch.filter(entry => entry.type === 'message' && entry.message.role === 'user');
-  return {
-    sessionFile,
-    latestUserMessageId: users.at(-1)?.id,
-    totalUserMessages: users.length,
-    recentUserMessages: users.slice(-limit).map((entry, index) => ({
-      messageId: entry.id,
-      ordinal: Math.max(0, users.length - limit) + index + 1,
-      timestamp: entry.timestamp,
-      codePoints: Array.from(messageText(entry.message.content)).length,
-    })),
-  };
-}
-
 export function resolvePointer(sessionFile, branch, args = {}) {
   if (!sessionFile || !isAbsolute(sessionFile)) throw new Error('Delegation requires a persisted session.');
   if (Object.keys(args).some(key => !['messageId', 'start', 'end'].includes(key))) {
@@ -28,7 +12,7 @@ export function resolvePointer(sessionFile, branch, args = {}) {
   }
   const users = branch.filter(entry => entry.type === 'message' && entry.message.role === 'user');
   const entry = args.messageId === undefined ? users.at(-1) : users.find(entry => entry.id === args.messageId);
-  if (!entry) throw new Error('User message not found on the active branch. For the current request call delegate({}); for an earlier request use a real log entry ID from the pointer index, not a model-generated conversation ID.');
+  if (!entry) throw new Error('User message not found on the active branch. For the current request call delegate({}); for an earlier request read the session log and use its top-level user-entry ID, not a model-generated conversation ID.');
   if (branch.some(item => item.type === 'context_edit' && item.targetId === entry.id)) {
     throw new Error('This message has context edits. Submit the intended request as a new message.');
   }

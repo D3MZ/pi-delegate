@@ -4,21 +4,17 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolvePointer, makePrompt, messageText, pointerIndex } from '../src/pointer.mjs';
+import { resolvePointer, makePrompt, messageText } from '../src/pointer.mjs';
 import { startWorker, eventReader, completionText } from '../src/runner.mjs';
 const user = (id, content) => ({ type: 'message', id, message: { role: 'user', content } });
 const branch = [user('first', 'original request'), user('last', 'a😀bc')];
 
-test('pointer index supplies real IDs and code-point lengths without task text', () => {
-  const entries = Array.from({ length: 40 }, (_, i) => user(`id${i}`, 'private 😀 request'));
-  const index = pointerIndex('/tmp/s', entries);
-  assert.equal(index.latestUserMessageId, 'id39');
-  assert.equal(index.totalUserMessages, 40);
-  assert.equal(index.recentUserMessages.length, 32);
-  assert.equal(index.recentUserMessages[0].ordinal, 9);
-  assert.equal(index.recentUserMessages.at(-1).codePoints, 17);
-  assert.ok(!JSON.stringify(index).includes('private'));
-  assert.deepEqual(pointerIndex('/tmp/s', []).recentUserMessages, []);
+test('explicit IDs must identify user messages on the active branch', () => {
+  const entries = [...branch, { type: 'message', id: 'assistant-id', message: { role: 'assistant', content: [] } }];
+  for (const messageId of ['assistant-id', 'abandoned-branch-id', 'concat-000002-user']) {
+    assert.throws(() => resolvePointer('/tmp/s', entries, { messageId }), /read the session log/);
+  }
+  assert.equal(resolvePointer('/tmp/s', entries, { messageId: 'first' }).messageId, 'first');
 });
 
 test('defaults to latest user message, retaining thread leaf', () => {

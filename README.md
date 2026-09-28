@@ -48,11 +48,10 @@ branch**, not an ID inside its `message` object or a model-generated conversatio
 label. For the current request, use `delegate({})` without specifying an ID.
 The parent session must already be persisted.
 
-The extension supplies a context-only index of the last 32 user messages' real
-log IDs, ordinal positions, timestamps, and text lengths, plus the session path
-for looking up older messages. This is mechanical metadata: no task text or
-summaries are copied, and the index is not appended to the saved conversation.
-It refreshes for each model request, including queued follow-ups.
+The parent receives only a short lookup instruction and the session-log path,
+not a message index. For earlier requests, it reads the log on demand to find
+the exact top-level user-entry ID. The tool validates that ID against the active
+branch when called; latest-message delegation needs no lookup.
 
 Supply both `start` and `end`, or neither. Offsets are zero-based Unicode code
 points, end-exclusive, over text blocks joined with `\n`. For example, the emoji
