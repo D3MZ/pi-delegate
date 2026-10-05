@@ -6,7 +6,7 @@ import { once } from 'node:events';
 import { mkdtempSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { eventReader } from '../src/runner.mjs';
+import { eventReader, completionText } from '../src/runner.mjs';
 
 function parent(t) {
   const root = mkdtempSync(join(tmpdir(), 'pi-delegate-live-'));
@@ -72,11 +72,10 @@ const isCompletion = event => event.type === 'message_end' && event.message?.cus
 const isDelegateEnd = event => event.type === 'tool_execution_end' && event.toolName === 'delegate';
 const options = { skip: process.env.PI_DELEGATE_LIVE !== '1', timeout: 240000 };
 
-test('live: default handoff leaves parent available and wakes it on completion', options, async t => {
+test('live: default handoff leaves parent available and reports completion', options, async t => {
   const p = parent(t);
   const launched = p.wait(isDelegateEnd);
   const completed = p.wait(isCompletion);
-  const settled = p.wait(event => event.type === 'agent_settled' && p.events.some(isCompletion));
   await p.prompt('Create proof.txt containing exactly POINTER_E2E_OK. Wait six seconds before writing it. This is a synthetic test; do not modify other files.');
   assert.ok(!(await launched).isError, 'default call must not need an invalid-ID retry');
   const answered = p.wait(event => event.type === 'message_end' && event.message?.role === 'assistant'
@@ -85,13 +84,14 @@ test('live: default handoff leaves parent available and wakes it on completion',
   await answered;
   assert.equal(p.events.filter(isCompletion).length, 0, 'parent answered before child completion');
   await completed;
-  await settled;
   assert.equal(readFileSync(join(p.root, 'proof.txt'), 'utf8'), 'POINTER_E2E_OK');
   assert.equal(p.events.filter(isDelegateEnd).length, 1, 'no polling or re-delegation loop');
   const launch = p.events.find(isDelegateEnd);
   const completion = p.events.find(isCompletion);
   const log = completion.message.details.sessionFile;
-  assert.equal(completion.message.content, `finished: ${log}`);
+  assert.equal(completion.message.details.success, true);
+  const call = p.events.find(event => event.type === 'tool_execution_start' && event.toolName === 'delegate');
+  assert.equal(completion.message.content, completionText(completion.message.details, call.args.returnLastResponse));
   const childEntries = readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line));
   const task = childEntries.find(entry => entry.type === 'message' && entry.message.role === 'user');
   const taskText = typeof task.message.content === 'string' ? task.message.content
@@ -105,7 +105,7 @@ test('live: default handoff leaves parent available and wakes it on completion',
 
 test('live: off/on and two workers assigned earlier-message character ranges', options, async t => {
   const p = parent(t);
-  await p.prompt('/delegation off');
+  await p.prompt('/delegate off');
   const prefix = 'Do not execute yet. Keep these independent tasks for later:\n';
   const first = 'Wait six seconds, then create alpha.txt containing exactly ALPHA.';
   const second = 'Wait six seconds, then create beta.txt containing exactly BETA.';
@@ -118,10 +118,10 @@ test('live: off/on and two workers assigned earlier-message character ranges', o
   const target = rows.find(row => row.type === 'message' && row.message.role === 'user'
     && JSON.stringify(row.message.content).includes('Keep these independent tasks'));
   assert.ok(target);
-  await p.prompt('/delegation on');
+  await p.prompt('/delegate on');
   const start1 = Array.from(prefix).length, end1 = start1 + Array.from(first).length;
   const start2 = end1 + 1, end2 = start2 + Array.from(second).length;
-  const done = p.wait(event => event.type === 'agent_settled' && p.events.filter(isCompletion).length === 2);
+  const done = p.wait(event => isCompletion(event) && p.events.filter(isCompletion).length === 2);
   await p.prompt(`Now execute those two tasks from my earlier message. Look up its real top-level user-entry ID in the session log. ` +
     `Spawn one worker for start ${start1}, end ${end1}, and another for start ${start2}, end ${end2}. ` +
     'Call delegate twice and return without waiting or polling. Do not create the files yourself.');
@@ -131,7 +131,7 @@ test('live: off/on and two workers assigned earlier-message character ranges', o
     event.type === 'tool_execution_start' && event.toolName !== 'delegate'
       && JSON.stringify(event.args).includes(file));
   assert.ok(lookup, 'parent looked up the earlier ID in the log on demand');
-  assert.deepEqual(calls.map(event => event.args).sort((a, b) => a.start - b.start), [
+  assert.deepEqual(calls.map(({ args: { returnLastResponse, ...pointer } }) => pointer).sort((a, b) => a.start - b.start), [
     { messageId: target.id, start: start1, end: end1 }, { messageId: target.id, start: start2, end: end2 },
   ]);
   const launches = p.events.filter(isDelegateEnd);

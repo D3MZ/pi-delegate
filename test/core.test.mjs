@@ -50,16 +50,18 @@ test('JSONL handles chunk boundaries, Unicode separators, oversized records, and
   assert.deepEqual(events, [{ text: 'a\u2028b' }, { ok: true }]);
 });
 
-test('completion callbacks contain only status and child log pointer', () => {
-  for (const status of ['finished', 'failed', 'cancelled', 'incomplete']) {
-    assert.equal(completionText({ status, sessionFile: '/private/child.jsonl', stderrFile: '/private/stderr.log' }),
-      `${status}: /private/child.jsonl`);
-  }
-  assert.equal(completionText({ status: 'failed', stderrFile: '/private/stderr.log' }),
-    'failed: no session log; diagnostics: /private/stderr.log');
+test('completion notifications forward the final response only when requested', () => {
+  assert.equal(completionText({ id: 'worker', success: true, lastResponse: 'hidden' }), 'worker:Completed');
+  assert.equal(completionText({ id: 'worker', success: false, lastResponse: 'Blocked 😀\nDetails' }), 'worker:Error');
+  assert.equal(completionText({ id: 'worker', success: false, lastResponse: 'Blocked 😀\nDetails' }, true),
+    'worker:Error last response: Blocked 😀\nDetails');
+  assert.equal(completionText({ id: 'worker', success: true, lastResponse: 'Answer' }, true),
+    'worker:Completed last response: Answer');
+  assert.equal(completionText({ id: 'worker' }), 'worker:Error');
+  assert.equal(completionText({ id: 'worker' }, true), 'worker:Error last response: (no assistant text response)');
 });
 
-for (const [mode, status] of [['normal', 'finished'], ['error', 'failed'], ['exit', 'failed'], ['wait', 'cancelled']]) {
+for (const [mode, status] of [['normal', 'finished'], ['blocked', 'finished'], ['length', 'incomplete'], ['error', 'failed'], ['exit', 'failed'], ['wait', 'cancelled']]) {
   test(`native child lifecycle: ${mode}`, async t => {
     const root = mkdtempSync(join(tmpdir(), 'pi-delegate-test-'));
     t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -72,6 +74,14 @@ for (const [mode, status] of [['normal', 'finished'], ['error', 'failed'], ['exi
     if (mode === 'wait') worker.cancel();
     const result = await worker.done;
     assert.equal(result.status, status);
+    assert.equal(result.success, mode === 'normal' || mode === 'blocked');
+    if (mode === 'blocked') {
+      assert.equal(result.lastResponse, 'Blocked: cannot finish');
+      assert.equal(completionText(result), `${result.id}:Completed`);
+      assert.equal(completionText(result, true), `${result.id}:Completed last response: Blocked: cannot finish`);
+    }
+    if (mode === 'normal') assert.equal(result.error, undefined);
+    if (mode !== 'wait' && mode !== 'blocked') assert.equal(result.lastResponse, 'Worker result 😀');
     if (mode !== 'wait') {
       const fixture = JSON.parse(readFileSync(result.sessionFile, 'utf8'));
       assert.equal(fixture.child, '1');
@@ -79,9 +89,43 @@ for (const [mode, status] of [['normal', 'finished'], ['error', 'failed'], ['exi
         assert.ok(!fixture.args.includes(override));
       }
       assert.ok(!fixture.args.at(-1).includes('original request'));
+      assert.ok(!fixture.args.includes('--extension'));
+      assert.ok(!fixture.args.at(-1).includes('delegate_callback'));
     }
   });
 }
+for (const mode of ['tool-error', 'empty-error']) {
+  test(`provider failure preserves text, not tool calls: ${mode}`, async t => {
+    const root = mkdtempSync(join(tmpdir(), 'pi-delegate-error-'));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const worker = await startWorker({ cwd: root, root, pointer: resolvePointer('/tmp/s', branch),
+      command: process.execPath, prefix: [fileURLToPath(new URL('./fixtures/child.mjs', import.meta.url))],
+      env: { ...process.env, FIXTURE_MODE: mode } });
+    const result = await worker.done;
+    assert.equal(result.success, false);
+    assert.equal(result.error, 'WebSocket error');
+    assert.equal(result.lastResponse, mode === 'tool-error' ? 'Last real response' : '');
+    for (const option of [false, true]) {
+      assert.match(completionText(result, option), /Error: WebSocket error/);
+      assert.equal(completionText(result, option).includes('last response:'), option);
+      assert.ok(!completionText(result, option).includes('partial'));
+      assert.ok(!completionText(result, option).includes('Not the response'));
+    }
+  });
+}
+
+test('startup failures surface stderr even without an assistant response', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'pi-delegate-startup-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const worker = await startWorker({ cwd: root, root, pointer: resolvePointer('/tmp/s', branch),
+    command: process.execPath, prefix: [fileURLToPath(new URL('./fixtures/child.mjs', import.meta.url))],
+    env: { ...process.env, FIXTURE_MODE: 'startup-error' } });
+  const result = await worker.done;
+  assert.equal(result.success, false);
+  assert.equal(result.lastResponse, '');
+  assert.match(completionText(result), /Error: Failed to load extension: missing callback.ts/);
+});
+
 test('spawn failure rejects without an unhandled rejection', async t => {
   const root = mkdtempSync(join(tmpdir(), 'pi-delegate-test-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));

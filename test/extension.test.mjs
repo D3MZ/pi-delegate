@@ -45,31 +45,79 @@ test('Pi loader, global mode, pointer-only tool, notification, shutdown, and chi
     };
     const emit = async name => { for (const fn of extension.handlers.get(name) ?? []) await fn({}, ctx); };
     await emit('session_start');
-    const command = extension.commands.get('delegation').handler;
+    const command = extension.commands.get('delegate').handler;
+    assert.equal(extension.commands.get('delegation').handler, command, 'original command remains an alias');
+    await assert.rejects(command('invalid', ctx), /Use \/delegate on\|off\|status or \/delegate cancel/);
+    await command('status', ctx);
+    assert.match(notices.at(-1)[0], /^Delegate on\./);
     const tool = extension.tools.get('delegate').definition;
-    assert.equal(extension.handlers.has('context'), false, 'no per-request message index');
-    const policy = extension.handlers.get('before_agent_start')[0]({}, {
+    const { normalizeBuildSystemPromptOptions, buildSystemPromptSections, diffSystemPromptSections } =
+      await import(pathToFileURL(join(piPackage, 'dist/core/system-prompt.js')));
+    const policyHandler = extension.handlers.get('before_agent_start')[0];
+    const policyContext = {
       ...ctx, sessionManager: { ...ctx.sessionManager,
         getBranch: () => { throw new Error('Policy must not enumerate messages'); } },
-    }).message.content;
+    };
+    const promptEvent = { systemPromptOptions: normalizeBuildSystemPromptOptions({ cwd: root,
+      sections: { other_extension: 'Keep this section' } }) };
+    assert.equal(policyHandler(promptEvent, policyContext), undefined, 'no persisted custom message');
+    const policy = promptEvent.systemPromptOptions.sections.pi_delegate_policy;
+    const firstPrompt = buildSystemPromptSections(promptEvent.systemPromptOptions);
+    for (let turn = 0; turn < 20; turn++) {
+      assert.equal(policyHandler(promptEvent, policyContext), undefined);
+      assert.equal(diffSystemPromptSections(firstPrompt,
+        buildSystemPromptSections(promptEvent.systemPromptOptions)), undefined, 'no repeated prompt delta');
+    }
+    assert.equal(promptEvent.systemPromptOptions.sections.other_extension, 'Keep this section');
+    const messages = [
+      { role: 'user', content: 'Keep user' },
+      { role: 'custom', customType: 'pi-delegate-policy', content: 'old ON policy' },
+      { role: 'custom', customType: 'pi-delegate-result', content: 'Keep result' },
+      { role: 'custom', customType: 'pi-delegate-policy', content: 'old OFF policy' },
+      { role: 'assistant', content: 'Keep assistant' },
+      { role: 'custom', customType: 'other-extension', content: 'Keep other' },
+    ];
+    const original = structuredClone(messages);
+    const filterContext = extension.handlers.get('context')[0];
+    const filtered = filterContext({ messages }).messages;
+    assert.deepEqual(filtered, [messages[0], messages[2], messages[4], messages[5]]);
+    assert.deepEqual(messages, original, 'history not mutated');
+    assert.deepEqual(filterContext({ messages: filtered }).messages, filtered);
     assert.ok(policy.includes(JSON.stringify(sessionFile)));
     assert.match(policy, /top-level user-entry ID/);
+    assert.match(policy, /worker-ID:Completed/);
+    assert.match(policy, /worker-ID:Error/);
+    assert.doesNotMatch(policy, /worker-ID:(Success|Failed)|not that its task was verified/);
     assert.ok(!policy.includes('private synthetic task text'));
     assert.ok(!policy.includes('"messageId":"request"'));
     await command('off', ctx);
+    policyHandler(promptEvent, policyContext);
+    assert.match(promptEvent.systemPromptOptions.sections.pi_delegate_policy, /Delegate mode is OFF/);
+    assert.doesNotMatch(promptEvent.systemPromptOptions.sections.pi_delegate_policy, /Delegate mode is ON/);
+    const offPrompt = buildSystemPromptSections(promptEvent.systemPromptOptions);
+    assert.deepEqual(Object.keys(diffSystemPromptSections(firstPrompt, offPrompt)), ['pi_delegate_policy']);
     await assert.rejects(tool.execute('t', {}, undefined, undefined, ctx), /off/);
     await emit('session_start'); // Restores persisted off mode.
     await assert.rejects(tool.execute('t', {}, undefined, undefined, ctx), /off/);
     await command('on', ctx);
+    policyHandler(promptEvent, policyContext);
+    assert.equal(promptEvent.systemPromptOptions.sections.pi_delegate_policy, policy);
+    const changedSession = { ...policyContext, sessionManager: { ...policyContext.sessionManager,
+      getSessionFile: () => join(root, 'other.jsonl') } };
+    policyHandler(promptEvent, changedSession);
+    assert.ok(promptEvent.systemPromptOptions.sections.pi_delegate_policy.includes(JSON.stringify(join(root, 'other.jsonl'))));
+    assert.ok(!promptEvent.systemPromptOptions.sections.pi_delegate_policy.includes(JSON.stringify(sessionFile)));
+    policyHandler(promptEvent, policyContext);
     const result = await tool.execute('t', {}, undefined, undefined, ctx);
     assert.equal(result.details.pointer.messageId, 'request');
     assert.ok(!JSON.stringify(result).includes('private synthetic task text'));
     const { message, options } = await notification;
     assert.equal(message.details.status, 'finished');
-    assert.equal(message.content, `finished: ${message.details.sessionFile}`);
+    assert.equal(message.content, `${message.details.id}:Completed`);
     assert.ok(!message.content.includes('private synthetic task text'));
-    assert.equal(options.deliverAs, 'followUp');
-    assert.equal(options.triggerTurn, true);
+    assert.equal(message.display, true);
+    assert.equal(options.deliverAs, undefined);
+    assert.equal(options.triggerTurn, false);
     // Multiple calls can address disjoint portions of an earlier request.
     branch.push({ type: 'message', id: 'newer', message: { role: 'user', content: 'A newer request.' } });
     const concurrentDone = new Promise(resolve => {
@@ -93,6 +141,95 @@ test('Pi loader, global mode, pointer-only tool, notification, shutdown, and chi
       assert.ok(fixture.args.at(-1).includes(JSON.stringify(pointer)));
       assert.ok(!fixture.args.at(-1).includes('private synthetic task text'));
     }
+    assert.equal(tool.parameters.properties.returnLastResponse.type, 'boolean');
+    for (const [mode, returnLastResponse, expected] of [
+      ['normal', true, 'Completed last response: Worker result 😀'],
+      ['normal', false, 'Completed'],
+      ['blocked', false, 'Completed'],
+      ['blocked', true, 'Completed last response: Blocked: cannot finish'],
+      ['length', false, 'Error'],
+      ['length', true, 'Error last response: Worker result 😀'],
+      ['tool-error', false, 'Error\nError: WebSocket error'],
+      ['tool-error', true, 'Error last response: Last real response\nError: WebSocket error'],
+      ['empty-error', true, 'Error last response: (no assistant text response)\nError: WebSocket error'],
+    ]) {
+      process.env.FIXTURE_MODE = mode;
+      const done = new Promise(resolve => {
+        loaded.runtime.sendMessage = (message, options) => resolve({ message, options });
+      });
+      const started = await tool.execute('option', { returnLastResponse }, undefined, undefined, ctx);
+      const { message: completed, options } = await done;
+      assert.equal(completed.content, `${started.details.id}:${expected}`);
+      assert.equal(options.triggerTurn, !['normal', 'blocked'].includes(mode));
+      assert.equal(completed.display, true);
+      assert.equal(options.deliverAs, ['normal', 'blocked'].includes(mode) ? undefined : 'followUp');
+      assert.equal('returnLastResponse' in started.details.pointer, false);
+    }
+    const callbackTool = extension.tools.get('delegate_callback').definition;
+    assert.equal(tool.parameters.properties.notifyOnCompletion.type, 'boolean');
+    assert.match(policy, /notifyOnCompletion:true/);
+    assert.match(policy, /delegate_callback/);
+    assert.match(policy, /previously user-requested sequence/);
+    await assert.rejects(callbackTool.execute('unknown', { id: 'unknown' }, undefined, undefined, ctx), /Unknown worker/);
+    const recorded = [];
+    let completionResolve;
+    loaded.runtime.sendMessage = (message, options) => {
+      recorded.push({ message, options });
+      branch.push({ type: 'custom_message', customType: message.customType,
+        details: message.details, content: message.content, id: `completion-${recorded.length}` });
+      completionResolve?.({ message, options });
+    };
+    const launchAndFinish = async args => {
+      const done = new Promise(resolve => { completionResolve = resolve; });
+      const started = await tool.execute('callback-launch', args, undefined, undefined, ctx);
+      return { started, completed: await done };
+    };
+    process.env.FIXTURE_MODE = 'normal';
+    const optedIn = await launchAndFinish({ notifyOnCompletion: true, returnLastResponse: true });
+    assert.equal(optedIn.completed.options.triggerTurn, true);
+    assert.equal(optedIn.completed.options.deliverAs, 'followUp');
+    assert.match(optedIn.completed.message.content, /Worker result/);
+    assert.equal('notifyOnCompletion' in optedIn.started.details.pointer, false);
+    const passive = await launchAndFinish({});
+    assert.equal(passive.completed.options.triggerTurn, false);
+    await command('off', ctx); // Callback subscription does not start a task.
+    await callbackTool.execute('late', { id: passive.started.details.id }, undefined, undefined, ctx);
+    assert.equal(recorded.at(-1).options.triggerTurn, true);
+    assert.equal(recorded.at(-1).options.deliverAs, 'followUp');
+    assert.match(recorded.at(-1).message.content, /Worker result/);
+    const count = recorded.length;
+    await callbackTool.execute('duplicate', { id: passive.started.details.id }, undefined, undefined, ctx);
+    assert.equal(recorded.length, count, 'no duplicate wake-up');
+    await command('on', ctx);
+    const runningDone = new Promise(resolve => { completionResolve = resolve; });
+    const subscribed = await tool.execute('running', {}, undefined, undefined, ctx);
+    await callbackTool.execute('subscribe', { id: subscribed.details.id }, undefined, undefined, ctx);
+    assert.equal((await runningDone).options.triggerTurn, true);
+    const disabledDone = new Promise(resolve => { completionResolve = resolve; });
+    const disabled = await tool.execute('disable', { notifyOnCompletion: true }, undefined, undefined, ctx);
+    await callbackTool.execute('disable-callback', { id: disabled.details.id, notifyOnCompletion: false }, undefined, undefined, ctx);
+    assert.equal((await disabledDone).options.triggerTurn, false);
+    process.env.FIXTURE_MODE = 'tool-error';
+    assert.equal((await launchAndFinish({ notifyOnCompletion: false })).completed.options.triggerTurn, false);
+    process.env.FIXTURE_MODE = 'normal';
+    const historical = await launchAndFinish({});
+    // A fresh extension runtime can subscribe to persisted completed results.
+    const reloaded = await loadExtensions([entryPath], root);
+    assert.deepEqual(reloaded.errors, []);
+    const replay = [];
+    reloaded.runtime.sendMessage = (message, options) => replay.push({ message, options });
+    const restoredCallback = reloaded.extensions[0].tools.get('delegate_callback').definition;
+    await restoredCallback.execute('restored', { id: historical.started.details.id }, undefined, undefined, ctx);
+    assert.equal(replay.length, 1);
+    assert.equal(replay[0].options.triggerTurn, true);
+    assert.match(replay[0].message.content, /Worker result/);
+    const otherSession = { ...ctx, sessionManager: { ...ctx.sessionManager,
+      getSessionFile: () => join(root, 'other.jsonl'), getBranch: () => [] } };
+    await assert.rejects(callbackTool.execute('foreign', { id: historical.started.details.id }, undefined, undefined, otherSession), /Unknown worker/);
+    const abandoned = { ...ctx, sessionManager: { ...ctx.sessionManager, getBranch: () => branch.filter(entry => entry.type !== 'custom_message') } };
+    await assert.rejects(callbackTool.execute('abandoned', { id: historical.started.details.id }, undefined, undefined, abandoned), /Unknown worker/);
+    const aborted = new AbortController(); aborted.abort();
+    await assert.rejects(callbackTool.execute('aborted', { id: historical.started.details.id }, aborted.signal, undefined, ctx), /cancelled/);
     process.env.FIXTURE_MODE = 'wait';
     const pending = await tool.execute('t2', {}, undefined, undefined, ctx);
     assert.ok(pending.details.id);

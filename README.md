@@ -6,6 +6,8 @@ Pointer-only background delegation for [Pi](https://github.com/earendil-works/pi
 delegate({})                                       // latest user message
 delegate({ messageId: "abc123" })                  // earlier request
 delegate({ messageId: "abc123", start: 20, end: 90 }) // part of a request
+delegate({ notifyOnCompletion: true, returnLastResponse: true }) // wake for next steps
+delegate_callback({ id: "<worker-id>" })             // subscribe later; no new worker
 ```
 
 The parent supplies no task text. The extension resolves the session log path,
@@ -31,15 +33,22 @@ Pi's supplied peer packages.
 
 ## Controls
 
-- `/delegation on` — delegate execution requests by default (initial setting).
-- `/delegation off` — work directly; the tool rejects new launches.
-- `/delegation status` — show mode and currently running worker IDs.
-- `/delegation cancel <worker-id>` or `/delegation cancel all` — stop workers.
+- `/delegate on` — delegate execution requests by default (initial setting).
+- `/delegate off` — work directly; the tool rejects new launches.
+- `/delegate status` — show mode and currently running worker IDs.
+- `/delegate cancel <worker-id>` or `/delegate cancel all` — stop workers.
+
+The original `/delegation` command remains an alias for `/delegate`.
 
 The mode is saved in the current session and restored on reload. Turning it off
 does not cancel existing workers. The default-use policy is an instruction to
 the parent model, not automatic dispatch of every user message. Questions and
 reviews remain in the parent conversation.
+
+The policy lives in a named system-prompt section, not a new chat entry each turn.
+Unchanged turns add no policy delta; mode/session changes replace that section.
+Legacy `pi-delegate-policy` messages are filtered from model context without
+rewriting session logs. Run `/reload` to apply this to an existing session.
 
 ## Pointer contract
 
@@ -80,19 +89,55 @@ log/message/range pointer; the rest records the worker's investigation, actions,
 and final response. The file alone identifies the run—no start/stop offsets or
 second task reference are needed.
 
-On exit, the extension wakes the parent with a minimal follow-up callback:
+On exit, clean worker completions are displayed in chat without triggering a model call
+and remain in context for the next normal turn. If the parent is streaming, Pi safely
+appends them when its current turn ends. Failures wake the parent with a follow-up turn
+by default. Set `notifyOnCompletion: true` on `delegate` to wake the parent on any
+completion, for example to continue a user-requested audit/publish sequence.
+Set it to `false` for passive display even on errors. This controls model wake-up,
+not whether a completion is displayed; `returnLastResponse` independently controls
+whether the worker's answer is included.
 
-```text
-finished: /absolute/path/to/child-session.jsonl
+Subscribe or change that choice later with the **parent-side** tool:
+
+```js
+delegate_callback({ id: "<worker-id>" }) // defaults: wake + include last response
+delegate_callback({ id: "<worker-id>", notifyOnCompletion: false }) // disable wake
 ```
 
-Failure, cancellation, and incomplete runs retain their respective status. If
-Pi exits before creating a session log, the callback points to stderr instead.
-A failure to spawn Pi is returned immediately as a tool error. No task text, worker summary, or repeated instructions are included.
-A finished process is not proof of task success: its final response may report
-a blocker. The parent can read the referenced log to review the result.
+For a running task, this updates its eventual notification. For an already completed
+task with a result on the active session branch, it sends an immediate follow-up
+with the stored result, without rerunning the task. Repeated subscriptions do not
+wake again within the same runtime. Completed results remain available after reload;
+live workers still do not survive reload. Callbacks work even with delegate mode off.
+They never execute a next task by themselves: the awakened parent reviews the result
+and continues only the sequence the user already authorized. They are not a polling
+or waiting API. Unknown IDs and other-session/abandoned-branch results are rejected.
 
-Children inherit `PI_DELEGATE_CHILD=1`, which disables this extension inside them.
+Use `delegate({ returnLastResponse: true })` when the parent needs the worker's
+answer or summary, including on failure. The option defaults to false; it forwards
+only assistant text, never tool calls or tool results.
+
+Default notifications:
+
+```text
+cb9064da-6b6f-49d7-9cba-e83731e9d0c1:Completed
+# or
+cb9064da-6b6f-49d7-9cba-e83731e9d0c1:Error
+# with returnLastResponse: true:
+cb9064da-6b6f-49d7-9cba-e83731e9d0c1:Completed last response: <worker's last response>
+```
+
+The worker ends with a final result or blocker; there is no child callback tool.
+Completed indicates a clean exit after a final response. The response explains
+the result or blocker; use `returnLastResponse: true` to pass it to the parent.
+Cancellation, incomplete output, provider errors, and process failures produce Error. If forwarding is requested
+but no assistant text exists, the notification says `(no assistant text response)`. Provider errors
+such as `WebSocket error` are included as diagnostics, not passed off as worker
+responses. Logs and process diagnostics remain in notification details for
+optional investigation. A failure to spawn Pi is returned immediately as a tool error.
+
+Children inherit `PI_DELEGATE_CHILD=1`, which disables the parent delegation tool inside them.
 The fixed worker instruction also forbids further delegation. This is not a
 sandbox: other installed extensions and shell access retain their usual powers.
 

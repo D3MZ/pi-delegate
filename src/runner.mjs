@@ -1,8 +1,9 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, openSync, closeSync, readdirSync } from 'node:fs';
+import { mkdirSync, openSync, closeSync, readdirSync, fstatSync, readSync } from 'node:fs';
 import { join } from 'node:path';
-import { makePrompt } from './pointer.mjs';
+// Refresh the handoff prompt too when Pi reloads the extension in the same process.
+const { makePrompt, messageText } = await import(`./pointer.mjs?reload=${Date.now()}-${Math.random()}`);
 
 // Bounded, LF-only JSONL parser. Never retain streamed thinking or tool output.
 export function eventReader(onEvent, maxLength = 8 * 1024 * 1024) {
@@ -23,10 +24,24 @@ export function eventReader(onEvent, maxLength = 8 * 1024 * 1024) {
   };
 }
 
-export function completionText(result) {
-  return result.sessionFile
-    ? `${result.status}: ${result.sessionFile}`
-    : `${result.status}: no session log; diagnostics: ${result.stderrFile}`;
+export function completionText(result, returnLastResponse = false) {
+  const outcome = `${result.id}:${result.success ? 'Completed' : 'Error'}`;
+  const response = returnLastResponse
+    ? ` last response: ${result.lastResponse || '(no assistant text response)'}` : '';
+  const diagnostic = !result.success && result.error ? `\nError: ${result.error}` : '';
+  return outcome + response + diagnostic;
+}
+
+function stderrTail(path) {
+  let fd;
+  try {
+    fd = openSync(path, 'r');
+    const size = fstatSync(fd).size;
+    const buffer = Buffer.alloc(Math.min(size, 8192));
+    const length = readSync(fd, buffer, 0, buffer.length, size - buffer.length);
+    return buffer.subarray(0, length).toString('utf8').trim() || undefined;
+  } catch { return undefined; }
+  finally { if (fd !== undefined) closeSync(fd); }
 }
 
 export async function startWorker({ cwd, root, pointer, command = 'pi', prefix = [], env = process.env }) {
@@ -44,11 +59,14 @@ export async function startWorker({ cwd, root, pointer, command = 'pi', prefix =
       stdio: ['ignore', 'pipe', fd], detached: process.platform !== 'win32',
     });
   } finally { closeSync(fd); }
-  let lastAssistant, processError, cancelled = false, settled = false, killTimer;
+  let lastAssistant, lastResponse = '', processError, assistantError, cancelled = false, settled = false, killTimer;
   child.stdout.setEncoding('utf8');
   child.stdout.on('data', eventReader(event => {
     if (event.type === 'message_end' && event.message?.role === 'assistant') {
       lastAssistant = { stopReason: event.message.stopReason };
+      const text = messageText(event.message.content);
+      if (text.trim()) lastResponse = text;
+      assistantError = event.message.errorMessage;
     }
   }));
   child.on('error', error => { processError = error.message; });
@@ -65,9 +83,12 @@ export async function startWorker({ cwd, root, pointer, command = 'pi', prefix =
     try { sessionFile = readdirSync(sessions).find(name => name.endsWith('.jsonl')); }
     catch { /* Logs may have been removed externally. */ }
     resolve({ id, directory, stderrFile, sessionFile: sessionFile && join(sessions, sessionFile),
-      status: cancelled ? 'cancelled' : code === 0 && ['stop', 'length'].includes(lastAssistant?.stopReason)
-        ? (lastAssistant.stopReason === 'stop' ? 'finished' : 'incomplete') : 'failed',
-      code, signal: exitSignal, error: processError });
+      status: cancelled ? 'cancelled' : code === 0 && !processError && !assistantError && lastAssistant?.stopReason === 'stop' ? 'finished'
+        : code === 0 && !processError && !assistantError && lastAssistant?.stopReason === 'length' ? 'incomplete' : 'failed',
+      success: !cancelled && !processError && !assistantError && code === 0 && lastAssistant?.stopReason === 'stop',
+      lastResponse,
+      code, signal: exitSignal, error: processError || assistantError ||
+        (!cancelled && code !== 0 ? stderrTail(stderrFile) || `Worker exited with code ${code}, signal ${exitSignal || 'none'}.` : undefined) });
   }));
   try {
     await new Promise((resolve, reject) => {

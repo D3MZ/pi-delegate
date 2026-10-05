@@ -41,5 +41,6 @@ export function makePrompt(pointer) {
     'Read image blocks in the source message when relevant. ' +
     'Perform and verify the work directly. Do not delegate or spawn other agents. ' +
     'If blocked or the request is ambiguous, explain that in your final response rather than guessing. ' +
-    'Finish with a concise result or blocker. Do not modify the parent log.';
+    'Do not modify the parent log. End with a concise final response stating what was completed and verified, ' +
+    'or explain any blocker or incomplete work. Do not claim success without verification.';
 }
