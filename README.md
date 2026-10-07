@@ -38,7 +38,8 @@ Pi's supplied peer packages.
 - `/delegate status` — show mode and currently running worker IDs.
 - `/delegate cancel <worker-id>` or `/delegate cancel all` — stop workers.
 
-The original `/delegation` command remains an alias for `/delegate`.
+`/delegate` is the only command, keeping autocomplete to one menu item.
+The legacy `/delegation` alias has been removed.
 
 The mode is saved in the current session and restored on reload. Turning it off
 does not cancel existing workers. The default-use policy is an instruction to

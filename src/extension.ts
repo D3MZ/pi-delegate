@@ -86,7 +86,6 @@ export default async function (pi: ExtensionAPI) {
     },
   };
   pi.registerCommand('delegate', command);
-  pi.registerCommand('delegation', command); // Preserve the original command name.
 
   pi.registerTool({
     name: 'delegate', label: 'Delegate',
