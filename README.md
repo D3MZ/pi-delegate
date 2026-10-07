@@ -33,18 +33,29 @@ Pi's supplied peer packages.
 
 ## Controls
 
-- `/delegate on` — delegate execution requests by default (initial setting).
-- `/delegate off` — work directly; the tool rejects new launches.
+- `/delegate auto` — selective delegation (initial setting): work directly on small,
+  clearly scoped tasks; delegate substantial implementation, broad investigation,
+  or explicitly background work. Ask first if scope or permissions are unclear.
+- `/delegate on` — delegate execution requests by default.
+- `/delegate off` — work directly; the tool rejects new launches. Explicitly requested
+  subagents through other installed tools remain allowed.
 - `/delegate status` — show mode and currently running worker IDs.
 - `/delegate cancel <worker-id>` or `/delegate cancel all` — stop workers.
 
 `/delegate` is the only command, keeping autocomplete to one menu item.
 The legacy `/delegation` alias has been removed.
 
-The mode is saved in the current session and restored on reload. Turning it off
-does not cancel existing workers. The default-use policy is an instruction to
-the parent model, not automatic dispatch of every user message. Questions and
-reviews remain in the parent conversation.
+The mode is saved in the current session and restored on reload, including older
+saved on/off choices. Turning it off does not cancel existing workers. Routing is
+an instruction to the parent model, not automatic dispatch or a task-size detector.
+Questions and review discussion remain in the parent conversation.
+
+In auto mode, a small task such as adding one rule to `AGENTS.md` stays in the
+parent through editing, relevant checks, and the task-scoped commit. Substantial
+work goes to a background worker. Honor explicit requests to work directly.
+Both paths follow the project's validation, commit, and push-approval rules.
+Explicitly requested subagent orchestration stays in the parent in every mode;
+workers may not spawn subagents themselves.
 
 The policy lives in a named system-prompt section, not a new chat entry each turn.
 Unchanged turns add no policy delta; mode/session changes replace that section.
@@ -139,8 +150,11 @@ responses. Logs and process diagnostics remain in notification details for
 optional investigation. A failure to spawn Pi is returned immediately as a tool error.
 
 Children inherit `PI_DELEGATE_CHILD=1`, which disables the parent delegation tool inside them.
-The fixed worker instruction also forbids further delegation. This is not a
-sandbox: other installed extensions and shell access retain their usual powers.
+The fixed worker instruction requires direct execution and forbids spawning any
+agents, even when the assigned request asks for them. Such a misrouted request
+must be reported as blocked; the parent owns explicitly requested subagent fanout.
+This is not a sandbox: the no-subagent rule is an instruction, and other installed
+extensions and shell access retain their usual powers.
 
 Workers share the repository, without worktrees. Multiple calls are suitable
 for independent work; avoid overlapping edits. Closing/reloading/switching the

@@ -42,6 +42,14 @@ test('handoff includes pointers but no task contents', () => {
   assert.ok(!prompt.includes('original request'));
   assert.ok(!prompt.includes('a😀bc'));
 });
+test('workers receive the same no-spawn contract even for explicit fanout requests', () => {
+  for (const request of ['ordinary direct task', 'Use subagents to investigate and aggregate their results']) {
+    const prompt = makePrompt(resolvePointer('/tmp/s', [user('task', request)]));
+    assert.match(prompt, /Perform and verify the work directly\. Do not delegate or spawn other agents\./);
+    assert.doesNotMatch(prompt, /that orchestration is delegated to you|Do not spawn subagents otherwise/);
+    assert.ok(!prompt.includes(request), 'request still travels only by pointer');
+  }
+});
 test('JSONL handles chunk boundaries, Unicode separators, oversized records, and diagnostics', () => {
   const events = [];
   const read = eventReader(event => events.push(event), 80);
@@ -91,6 +99,7 @@ for (const [mode, status] of [['normal', 'finished'], ['blocked', 'finished'], [
       assert.ok(!fixture.args.at(-1).includes('original request'));
       assert.ok(!fixture.args.includes('--extension'));
       assert.ok(!fixture.args.at(-1).includes('delegate_callback'));
+      assert.match(fixture.args.at(-1), /Do not delegate or spawn other agents/);
     }
   });
 }

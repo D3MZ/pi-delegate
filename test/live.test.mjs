@@ -72,11 +72,11 @@ const isCompletion = event => event.type === 'message_end' && event.message?.cus
 const isDelegateEnd = event => event.type === 'tool_execution_end' && event.toolName === 'delegate';
 const options = { skip: process.env.PI_DELEGATE_LIVE !== '1', timeout: 240000 };
 
-test('live: default handoff leaves parent available and reports completion', options, async t => {
+test('live: explicit background work leaves parent available and reports completion', options, async t => {
   const p = parent(t);
   const launched = p.wait(isDelegateEnd);
   const completed = p.wait(isCompletion);
-  await p.prompt('Create proof.txt containing exactly POINTER_E2E_OK. Wait six seconds before writing it. This is a synthetic test; do not modify other files.');
+  await p.prompt('Run this task in the background: create proof.txt containing exactly POINTER_E2E_OK. Wait six seconds before writing it. This is a synthetic test; do not modify other files.');
   assert.ok(!(await launched).isError, 'default call must not need an invalid-ID retry');
   const answered = p.wait(event => event.type === 'message_end' && event.message?.role === 'assistant'
     && /\b4\b/.test(JSON.stringify(event.message.content)));

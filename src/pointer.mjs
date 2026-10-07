@@ -40,6 +40,7 @@ export function makePrompt(pointer) {
     'of the selected message text (text blocks joined with a newline); surrounding text is context, not additional work. ' +
     'Read image blocks in the source message when relevant. ' +
     'Perform and verify the work directly. Do not delegate or spawn other agents. ' +
+    'If the assigned request requires subagents, report that blocker; the parent owns subagent orchestration. ' +
     'If blocked or the request is ambiguous, explain that in your final response rather than guessing. ' +
     'Do not modify the parent log. End with a concise final response stating what was completed and verified, ' +
     'or explain any blocker or incomplete work. Do not claim success without verification.';

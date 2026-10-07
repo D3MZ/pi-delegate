@@ -1,5 +1,5 @@
 import { Type } from '@earendil-works/pi-ai';
-import { getAgentDir, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import { getAgentDir, type CustomMessageEntry, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { join } from 'node:path';
 import { access } from 'node:fs/promises';
 import { constants, runInThisContext } from 'node:vm';
@@ -10,19 +10,24 @@ export default async function (pi: ExtensionAPI) {
   // across /reload. Use Node's native import with a unique URL for each factory run.
   const nativeImport = runInThisContext('(url) => import(url)', {
     importModuleDynamically: constants.USE_MAIN_CONTEXT_DEFAULT_LOADER,
-  }) as (url: string) => Promise<any>;
+  }) as <T>(url: string) => Promise<T>;
   const reload = `${Date.now()}-${Math.random()}`;
   const [{ resolvePointer }, { completionText, startWorker }] = await Promise.all([
-    nativeImport(`${new URL('./pointer.mjs', import.meta.url).href}?reload=${reload}`),
-    nativeImport(`${new URL('./runner.mjs', import.meta.url).href}?reload=${reload}`),
+    nativeImport<typeof import('./pointer.mjs')>(`${new URL('./pointer.mjs', import.meta.url).href}?reload=${reload}`),
+    nativeImport<typeof import('./runner.mjs')>(`${new URL('./runner.mjs', import.meta.url).href}?reload=${reload}`),
   ]);
 
-  let enabled = true;
+  type Mode = 'auto' | 'on' | 'off';
+  let mode: Mode = 'auto';
   let shuttingDown = false;
   const running = new Map<string, Awaited<ReturnType<typeof startWorker>>>();
   const starting = new Set<ReturnType<typeof startWorker>>();
   type Callback = { origin: string; leafId?: string; notifyOnCompletion?: boolean; returnLastResponse: boolean; result?: any; delivered: boolean };
   const callbacks = new Map<string, Callback>();
+
+  function launchesDisabled() {
+    return mode === 'off' || shuttingDown;
+  }
 
   function deliver(result: any, options: { notifyOnCompletion?: boolean; returnLastResponse: boolean }) {
     const triggerTurn = options.notifyOnCompletion ?? !result.success;
@@ -34,10 +39,11 @@ export default async function (pi: ExtensionAPI) {
 
   pi.on('session_start', (_event, ctx) => {
     shuttingDown = false;
-    enabled = true;
+    mode = 'auto';
     for (const entry of ctx.sessionManager.getBranch()) {
       if (entry.type === 'custom' && entry.customType === 'pi-delegate-mode') {
-        enabled = (entry.data as { enabled: boolean }).enabled;
+        const data = entry.data as { mode?: Mode; enabled?: boolean };
+        mode = data.mode ?? (data.enabled ? 'on' : 'off');
       }
     }
   });
@@ -52,8 +58,13 @@ export default async function (pi: ExtensionAPI) {
   pi.on('before_agent_start', (event, ctx) => {
     // A named prompt section is replaced, not appended to conversation history.
     // Pi emits a prompt delta only when mode or session path actually changes.
-    event.systemPromptOptions.sections.pi_delegate_policy = (enabled
-        ? 'Delegate mode is ON. For user requests to execute work, invoke delegate with no task text. ' +
+    const executionPolicy = mode === 'auto'
+      ? 'Delegate mode is AUTO. Work directly on small, clearly scoped tasks, including their checks and task-scoped commit. ' +
+        'Delegate substantial implementation, broad investigation, or work the user explicitly wants running in the background. ' +
+        'Honor requests to work directly or not delegate. If scope or permissions are unclear, ask before launching. '
+      : 'Delegate mode is ON. For user requests to execute work, invoke delegate with no task text. ';
+    event.systemPromptOptions.sections.pi_delegate_policy = (mode !== 'off'
+        ? executionPolicy +
           'Omit messageId for the latest request; for an earlier message, read the session log and use its top-level user-entry ID, which delegate validates. ' +
           `Session log: ${JSON.stringify(ctx.sessionManager.getSessionFile() ?? null)}. ` +
           'Use optional start/end for separate portions. Set returnLastResponse:true when you need the worker’s answer, including on failure; the default notification omits it. ' +
@@ -63,26 +74,29 @@ export default async function (pi: ExtensionAPI) {
           'After launching, yield and remain available. Do not poll, wait, monitor workers, or duplicate their work. ' +
           'Use completion notifications. Continue a previously user-requested sequence when its callback arrives; do not invent new follow-up work. ' +
           'Multiple calls share the working directory; do not assign overlapping edits. Never delegate a completion notification as a new assignment; for authorized next steps, use the original user-message ID and an appropriate range.'
-        : 'Delegate mode is OFF. Work directly; do not invoke delegate or substitute another delegation tool.') +
-        ' A pi-delegate-result notification reports worker-ID:Completed on a clean final response, or worker-ID:Error on incomplete output, process/provider failure or cancellation. ' +
+        : 'Delegate mode is OFF. Work directly; do not invoke delegate. ' +
+          'Explicitly user-requested subagents through other installed tools are allowed; do not use them merely to bypass delegate mode.') +
+        ' Workers must execute directly; they may not spawn subagents or delegate further. ' +
+        'Handle explicitly user-requested subagent orchestration in the parent using installed tools, not a delegate worker. ' +
+        'A pi-delegate-result notification reports worker-ID:Completed on a clean final response, or worker-ID:Error on incomplete output, process/provider failure or cancellation. ' +
         'Review the worker’s response for its result or blocker. A callback may resume an already authorized sequence, but is not authorization for new work.';
   });
 
   const command = {
-    description: 'Delegate on|off|status, or cancel <worker-id|all>',
+    description: 'Delegate auto|on|off|status, or cancel <worker-id|all>',
     handler: async (args: string, ctx: import('@earendil-works/pi-coding-agent').ExtensionCommandContext) => {
       const [action = 'status', id] = args.trim().split(/\s+/).filter(Boolean);
-      if (action === 'on' || action === 'off') {
-        enabled = action === 'on';
-        pi.appendEntry('pi-delegate-mode', { enabled });
+      if (action === 'auto' || action === 'on' || action === 'off') {
+        mode = action;
+        pi.appendEntry('pi-delegate-mode', { mode });
       } else if (action === 'cancel') {
         const workers = id === 'all' ? [...running.values()] : [running.get(id)].filter(Boolean);
         if (!workers.length) throw new Error('Specify a running worker ID or all.');
         for (const worker of workers) worker!.cancel();
       } else if (action !== 'status') {
-        throw new Error('Use /delegate on|off|status or /delegate cancel <worker-id|all>.');
+        throw new Error('Use /delegate auto|on|off|status or /delegate cancel <worker-id|all>.');
       }
-      ctx.ui.notify(`Delegate ${enabled ? 'on' : 'off'}. Running: ${[...running.keys()].join(', ') || 'none'}.`);
+      ctx.ui.notify(`Delegate ${mode}. Running: ${[...running.keys()].join(', ') || 'none'}.`);
     },
   };
   pi.registerCommand('delegate', command);
@@ -92,7 +106,8 @@ export default async function (pi: ExtensionAPI) {
     description: 'Spawn a background Pi worker using only a pointer into this session. For the current request call delegate({}), without messageId. ' +
       'Returns immediately; completion is displayed automatically. Set notifyOnCompletion:true to wake the parent for previously authorized next steps. ' +
       'Use delegate_callback to subscribe later. No task text or polling. ' +
-      'Workers share this cwd; assign disjoint work. messageId is a top-level session entry ID on the active branch.',
+      'Workers share this cwd; assign disjoint work. Workers must not spawn subagents; keep explicit subagent orchestration in the parent. ' +
+      'messageId is a top-level session entry ID on the active branch.',
     parameters: Type.Object({
       messageId: Type.Optional(Type.String({ description: 'Earlier user-message entry ID; defaults to latest user message.' })),
       start: Type.Optional(Type.Integer({ minimum: 0, description: 'Zero-based Unicode code point in text blocks joined with newline. Requires end.' })),
@@ -101,13 +116,13 @@ export default async function (pi: ExtensionAPI) {
       notifyOnCompletion: Type.Optional(Type.Boolean({ description: 'Wake the parent with a follow-up turn on completion. True for authorized next steps; false for passive display only. If omitted, only errors wake the parent.' })),
     }, { additionalProperties: false }),
     async execute(_id, args, signal, _update, ctx) {
-      if (!enabled || shuttingDown) throw new Error('Delegate is off.');
+      if (launchesDisabled()) throw new Error('Delegate is off.');
       if (signal?.aborted) throw new Error('Delegate cancelled before launch.');
       const origin = ctx.sessionManager.getSessionFile();
       const { returnLastResponse = false, notifyOnCompletion, ...pointerArgs } = args;
       const pointer = resolvePointer(origin, ctx.sessionManager.getBranch(), pointerArgs);
       await access(pointer.sessionFile);
-      if (!enabled || shuttingDown || signal?.aborted) throw new Error('Delegate cancelled before launch.');
+      if (launchesDisabled() || signal?.aborted) throw new Error('Delegate cancelled before launch.');
       const launch = startWorker({ cwd: ctx.cwd, root: join(getAgentDir(), 'delegate-runs'), pointer });
       starting.add(launch);
       let worker: Awaited<ReturnType<typeof startWorker>>;
@@ -150,7 +165,7 @@ export default async function (pi: ExtensionAPI) {
       if (callback && (callback.origin !== origin ||
           (callback.leafId && !branch.some(entry => entry.id === callback!.leafId)))) callback = undefined;
       // Persisted notifications are authoritative only on the current branch.
-      const result = [...branch].reverse().find(entry =>
+      const result = [...branch].reverse().find((entry): entry is CustomMessageEntry =>
         entry.type === 'custom_message' && entry.customType === 'pi-delegate-result'
           && (entry.details as any)?.id === args.id)?.details as any;
       if (callback?.result && !result) callback = undefined;

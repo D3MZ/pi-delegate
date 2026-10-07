@@ -36,6 +36,66 @@ test('command autocomplete exposes one delegation control across prefixes and re
       }
     }
   });
+test('selective mode is the default and restores current and legacy branch state',
+  { skip: !piPackage }, async t => {
+    const root = mkdtempSync(join(tmpdir(), 'pi-delegate-mode-'));
+    const child = process.env.PI_DELEGATE_CHILD;
+    delete process.env.PI_DELEGATE_CHILD;
+    t.after(() => {
+      if (child === undefined) delete process.env.PI_DELEGATE_CHILD;
+      else process.env.PI_DELEGATE_CHILD = child;
+      rmSync(root, { recursive: true, force: true });
+    });
+    const { loadExtensions } = await import(pathToFileURL(join(piPackage, 'dist/core/extensions/loader.js')));
+    const entryPath = fileURLToPath(new URL('../src/extension.ts', import.meta.url));
+    const loaded = await loadExtensions([entryPath], root);
+    assert.deepEqual(loaded.errors, []);
+    const extension = loaded.extensions[0];
+    let branch = [];
+    const notices = [];
+    const ctx = { cwd: root, ui: { notify: message => notices.push(message) },
+      sessionManager: { getBranch: () => branch, getSessionFile: () => join(root, 'parent.jsonl'),
+        getEntries: () => { throw new Error('Use only the active branch'); } } };
+    loaded.runtime.appendEntry = (customType, data) => branch.push({ type: 'custom', customType, data });
+    const command = extension.commands.get('delegate').handler;
+    const policyHandler = extension.handlers.get('before_agent_start')[0];
+    for (const [history, expected] of [
+      [[], 'auto'],
+      [[{ mode: 'auto' }], 'auto'],
+      [[{ mode: 'on' }], 'on'],
+      [[{ mode: 'off' }], 'off'],
+      [[{ enabled: true }], 'on'],
+      [[{ enabled: false }], 'off'],
+      [[{ enabled: false }, { mode: 'auto' }], 'auto'],
+      [[{ mode: 'auto' }, { mode: 'off' }], 'off'],
+      [[], 'auto'],
+    ]) {
+      branch = history.map(data => ({ type: 'custom', customType: 'pi-delegate-mode', data }));
+      for (const handler of extension.handlers.get('session_start')) await handler({}, ctx);
+      await command('status', ctx);
+      assert.equal(notices.at(-1), `Delegate ${expected}. Running: none.`);
+      const event = { systemPromptOptions: { sections: {} } };
+      policyHandler(event, ctx);
+      const policy = event.systemPromptOptions.sections.pi_delegate_policy;
+      assert.match(policy, new RegExp(`Delegate mode is ${expected.toUpperCase()}`));
+      assert.match(policy, /Workers must execute directly; they may not spawn subagents or delegate further/);
+      assert.match(policy, /Handle explicitly user-requested subagent orchestration in the parent/);
+      if (expected === 'auto') {
+        assert.match(policy, /Work directly on small, clearly scoped tasks/);
+        assert.match(policy, /substantial implementation, broad investigation, or work the user explicitly wants running in the background/);
+        assert.match(policy, /If scope or permissions are unclear, ask before launching/);
+      }
+    }
+    for (const mode of ['on', 'off', 'auto']) {
+      await command(mode, ctx);
+      assert.deepEqual(branch.at(-1).data, { mode });
+      const reloaded = await loadExtensions([entryPath], root);
+      assert.deepEqual(reloaded.errors, []);
+      for (const handler of reloaded.extensions[0].handlers.get('session_start')) await handler({}, ctx);
+      await reloaded.extensions[0].commands.get('delegate').handler('status', ctx);
+      assert.equal(notices.at(-1), `Delegate ${mode}. Running: none.`);
+    }
+  });
 test('Pi loader, global mode, pointer-only tool, notification, shutdown, and child guard',
   { skip: !piPackage, timeout: 15000 }, async t => {
     const root = mkdtempSync(join(tmpdir(), 'pi-delegate-extension-'));
@@ -75,9 +135,9 @@ test('Pi loader, global mode, pointer-only tool, notification, shutdown, and chi
     const emit = async name => { for (const fn of extension.handlers.get(name) ?? []) await fn({}, ctx); };
     await emit('session_start');
     const command = extension.commands.get('delegate').handler;
-    await assert.rejects(command('invalid', ctx), /Use \/delegate on\|off\|status or \/delegate cancel/);
+    await assert.rejects(command('invalid', ctx), /Use \/delegate auto\|on\|off\|status or \/delegate cancel/);
     await command('status', ctx);
-    assert.match(notices.at(-1)[0], /^Delegate on\./);
+    assert.match(notices.at(-1)[0], /^Delegate auto\./);
     const tool = extension.tools.get('delegate').definition;
     const { normalizeBuildSystemPromptOptions, buildSystemPromptSections, diffSystemPromptSections } =
       await import(pathToFileURL(join(piPackage, 'dist/core/system-prompt.js')));
@@ -122,12 +182,16 @@ test('Pi loader, global mode, pointer-only tool, notification, shutdown, and chi
     policyHandler(promptEvent, policyContext);
     assert.match(promptEvent.systemPromptOptions.sections.pi_delegate_policy, /Delegate mode is OFF/);
     assert.doesNotMatch(promptEvent.systemPromptOptions.sections.pi_delegate_policy, /Delegate mode is ON/);
+    assert.match(promptEvent.systemPromptOptions.sections.pi_delegate_policy, /do not invoke delegate\./);
+    assert.match(promptEvent.systemPromptOptions.sections.pi_delegate_policy, /Explicitly user-requested subagents through other installed tools are allowed/);
+    assert.match(promptEvent.systemPromptOptions.sections.pi_delegate_policy, /do not use them merely to bypass delegate mode/);
+    assert.doesNotMatch(promptEvent.systemPromptOptions.sections.pi_delegate_policy, /or substitute another delegation tool/);
     const offPrompt = buildSystemPromptSections(promptEvent.systemPromptOptions);
     assert.deepEqual(Object.keys(diffSystemPromptSections(firstPrompt, offPrompt)), ['pi_delegate_policy']);
     await assert.rejects(tool.execute('t', {}, undefined, undefined, ctx), /off/);
     await emit('session_start'); // Restores persisted off mode.
     await assert.rejects(tool.execute('t', {}, undefined, undefined, ctx), /off/);
-    await command('on', ctx);
+    await command('auto', ctx);
     policyHandler(promptEvent, policyContext);
     assert.equal(promptEvent.systemPromptOptions.sections.pi_delegate_policy, policy);
     const changedSession = { ...policyContext, sessionManager: { ...policyContext.sessionManager,
@@ -136,6 +200,13 @@ test('Pi loader, global mode, pointer-only tool, notification, shutdown, and chi
     assert.ok(promptEvent.systemPromptOptions.sections.pi_delegate_policy.includes(JSON.stringify(join(root, 'other.jsonl'))));
     assert.ok(!promptEvent.systemPromptOptions.sections.pi_delegate_policy.includes(JSON.stringify(sessionFile)));
     policyHandler(promptEvent, policyContext);
+    for (const mode of ['auto', 'on']) {
+      await command(mode, ctx);
+      const cancelledLaunch = tool.execute('race', {}, undefined, undefined, ctx);
+      await command('off', ctx);
+      await assert.rejects(cancelledLaunch, /cancelled before launch/);
+    }
+    await command('auto', ctx);
     const result = await tool.execute('t', {}, undefined, undefined, ctx);
     assert.equal(result.details.pointer.messageId, 'request');
     assert.ok(!JSON.stringify(result).includes('private synthetic task text'));
@@ -168,6 +239,7 @@ test('Pi loader, global mode, pointer-only tool, notification, shutdown, and chi
       const fixture = JSON.parse(readFileSync(completion.sessionFile, 'utf8'));
       assert.ok(fixture.args.at(-1).includes(JSON.stringify(pointer)));
       assert.ok(!fixture.args.at(-1).includes('private synthetic task text'));
+      assert.match(fixture.args.at(-1), /Do not delegate or spawn other agents/);
     }
     assert.equal(tool.parameters.properties.returnLastResponse.type, 'boolean');
     for (const [mode, returnLastResponse, expected] of [
