@@ -63,17 +63,14 @@ test('delegation defaults off and restores only explicit current or legacy on/of
     await assert.rejects(tool.execute('initial', {}, undefined, undefined, ctx), /Delegate is off/);
     for (const [history, expected] of [
       [[], 'off'],
-      [[{ mode: 'auto' }], 'off'],
       [[{ mode: 'on' }], 'on'],
       [[{ mode: 'off' }], 'off'],
       [[{ enabled: true }], 'on'],
       [[{ enabled: false }], 'off'],
-      [[{ enabled: false }, { mode: 'auto' }], 'off'],
-      [[{ mode: 'on' }, { mode: 'auto' }], 'off'],
-      [[{ mode: 'auto' }, { mode: 'on' }], 'on'],
-      [[{ mode: 'auto' }, { mode: 'off' }], 'off'],
-      [[{ mode: 'auto', enabled: true }], 'off'],
+      [[{ mode: 'on' }, { mode: 'off' }], 'off'],
+      [[{ mode: 'off' }, { mode: 'on' }], 'on'],
       [[{ mode: 'invalid' }], 'off'],
+      [[{ mode: 'invalid', enabled: true }], 'off'],
       [[{}], 'off'],
       [[], 'off'],
     ]) {
@@ -87,10 +84,9 @@ test('delegation defaults off and restores only explicit current or legacy on/of
       assert.match(policy, new RegExp(`Delegate mode is ${expected.toUpperCase()}`));
       assert.match(policy, /Workers must execute directly; they may not spawn subagents or delegate further/);
       assert.match(policy, /Handle explicitly user-requested subagent orchestration in the parent/);
-      assert.doesNotMatch(policy, /Delegate mode is AUTO/);
       const historyBeforeInvalidCommand = structuredClone(branch);
-      await assert.rejects(command('auto', ctx), /Use \/delegate on\|off\|status/);
-      assert.deepEqual(branch, historyBeforeInvalidCommand, 'removed mode must not persist or change state');
+      await assert.rejects(command('invalid', ctx), /Use \/delegate on\|off\|status/);
+      assert.deepEqual(branch, historyBeforeInvalidCommand, 'invalid command must not persist or change state');
       await command('status', ctx);
       assert.equal(notices.at(-1), `Delegate ${expected}. Running: none.`);
       if (expected === 'off') {

@@ -43,8 +43,7 @@ Pi's supplied peer packages.
 The legacy `/delegation` alias has been removed.
 
 The mode is saved in the current session and restored on reload, including older
-saved on/off choices. New sessions start off. The former `auto` mode is no longer
-accepted; saved `auto` choices restore as off. Turning it off does not cancel
+saved on/off choices. New sessions start off. Turning it off does not cancel
 existing workers. Routing when on is an instruction to the parent model, not
 automatic dispatch. Questions and review discussion remain in the parent
 conversation.

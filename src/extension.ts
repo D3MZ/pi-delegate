@@ -43,7 +43,7 @@ export default async function (pi: ExtensionAPI) {
     for (const entry of ctx.sessionManager.getBranch()) {
       if (entry.type === 'custom' && entry.customType === 'pi-delegate-mode') {
         const data = entry.data as { mode?: string; enabled?: boolean };
-        // Removed or unknown modes must not enable launches after a reload.
+        // Only an explicit supported choice may enable launches after a reload.
         if (data.mode === undefined) mode = data.enabled === true ? 'on' : 'off';
         else mode = data.mode === 'on' ? 'on' : 'off';
       }
