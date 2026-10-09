@@ -17,8 +17,8 @@ export default async function (pi: ExtensionAPI) {
     nativeImport<typeof import('./runner.mjs')>(`${new URL('./runner.mjs', import.meta.url).href}?reload=${reload}`),
   ]);
 
-  type Mode = 'auto' | 'on' | 'off';
-  let mode: Mode = 'auto';
+  type Mode = 'on' | 'off';
+  let mode: Mode = 'off';
   let shuttingDown = false;
   const running = new Map<string, Awaited<ReturnType<typeof startWorker>>>();
   const starting = new Set<ReturnType<typeof startWorker>>();
@@ -39,11 +39,13 @@ export default async function (pi: ExtensionAPI) {
 
   pi.on('session_start', (_event, ctx) => {
     shuttingDown = false;
-    mode = 'auto';
+    mode = 'off';
     for (const entry of ctx.sessionManager.getBranch()) {
       if (entry.type === 'custom' && entry.customType === 'pi-delegate-mode') {
-        const data = entry.data as { mode?: Mode; enabled?: boolean };
-        mode = data.mode ?? (data.enabled ? 'on' : 'off');
+        const data = entry.data as { mode?: string; enabled?: boolean };
+        // Removed or unknown modes must not enable launches after a reload.
+        if (data.mode === undefined) mode = data.enabled === true ? 'on' : 'off';
+        else mode = data.mode === 'on' ? 'on' : 'off';
       }
     }
   });
@@ -58,13 +60,8 @@ export default async function (pi: ExtensionAPI) {
   pi.on('before_agent_start', (event, ctx) => {
     // A named prompt section is replaced, not appended to conversation history.
     // Pi emits a prompt delta only when mode or session path actually changes.
-    const executionPolicy = mode === 'auto'
-      ? 'Delegate mode is AUTO. Work directly on small, clearly scoped tasks, including their checks and task-scoped commit. ' +
-        'Delegate substantial implementation, broad investigation, or work the user explicitly wants running in the background. ' +
-        'Honor requests to work directly or not delegate. If scope or permissions are unclear, ask before launching. '
-      : 'Delegate mode is ON. For user requests to execute work, invoke delegate with no task text. ';
-    event.systemPromptOptions.sections.pi_delegate_policy = (mode !== 'off'
-        ? executionPolicy +
+    event.systemPromptOptions.sections.pi_delegate_policy = (mode === 'on'
+        ? 'Delegate mode is ON. For user requests to execute work, invoke delegate with no task text. ' +
           'Omit messageId for the latest request; for an earlier message, read the session log and use its top-level user-entry ID, which delegate validates. ' +
           `Session log: ${JSON.stringify(ctx.sessionManager.getSessionFile() ?? null)}. ` +
           'Use optional start/end for separate portions. Set returnLastResponse:true when you need the worker’s answer, including on failure; the default notification omits it. ' +
@@ -83,10 +80,10 @@ export default async function (pi: ExtensionAPI) {
   });
 
   const command = {
-    description: 'Delegate auto|on|off|status, or cancel <worker-id|all>',
+    description: 'Delegate on|off|status, or cancel <worker-id|all>',
     handler: async (args: string, ctx: import('@earendil-works/pi-coding-agent').ExtensionCommandContext) => {
       const [action = 'status', id] = args.trim().split(/\s+/).filter(Boolean);
-      if (action === 'auto' || action === 'on' || action === 'off') {
+      if (action === 'on' || action === 'off') {
         mode = action;
         pi.appendEntry('pi-delegate-mode', { mode });
       } else if (action === 'cancel') {
@@ -94,7 +91,7 @@ export default async function (pi: ExtensionAPI) {
         if (!workers.length) throw new Error('Specify a running worker ID or all.');
         for (const worker of workers) worker!.cancel();
       } else if (action !== 'status') {
-        throw new Error('Use /delegate auto|on|off|status or /delegate cancel <worker-id|all>.');
+        throw new Error('Use /delegate on|off|status or /delegate cancel <worker-id|all>.');
       }
       ctx.ui.notify(`Delegate ${mode}. Running: ${[...running.keys()].join(', ') || 'none'}.`);
     },

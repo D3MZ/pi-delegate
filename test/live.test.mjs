@@ -74,6 +74,7 @@ const options = { skip: process.env.PI_DELEGATE_LIVE !== '1', timeout: 240000 };
 
 test('live: explicit background work leaves parent available and reports completion', options, async t => {
   const p = parent(t);
+  await p.prompt('/delegate on');
   const launched = p.wait(isDelegateEnd);
   const completed = p.wait(isCompletion);
   await p.prompt('Run this task in the background: create proof.txt containing exactly POINTER_E2E_OK. Wait six seconds before writing it. This is a synthetic test; do not modify other files.');

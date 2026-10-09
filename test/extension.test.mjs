@@ -36,7 +36,7 @@ test('command autocomplete exposes one delegation control across prefixes and re
       }
     }
   });
-test('selective mode is the default and restores current and legacy branch state',
+test('delegation defaults off and restores only explicit current or legacy on/off choices',
   { skip: !piPackage }, async t => {
     const root = mkdtempSync(join(tmpdir(), 'pi-delegate-mode-'));
     const child = process.env.PI_DELEGATE_CHILD;
@@ -59,16 +59,23 @@ test('selective mode is the default and restores current and legacy branch state
     loaded.runtime.appendEntry = (customType, data) => branch.push({ type: 'custom', customType, data });
     const command = extension.commands.get('delegate').handler;
     const policyHandler = extension.handlers.get('before_agent_start')[0];
+    const tool = extension.tools.get('delegate').definition;
+    await assert.rejects(tool.execute('initial', {}, undefined, undefined, ctx), /Delegate is off/);
     for (const [history, expected] of [
-      [[], 'auto'],
-      [[{ mode: 'auto' }], 'auto'],
+      [[], 'off'],
+      [[{ mode: 'auto' }], 'off'],
       [[{ mode: 'on' }], 'on'],
       [[{ mode: 'off' }], 'off'],
       [[{ enabled: true }], 'on'],
       [[{ enabled: false }], 'off'],
-      [[{ enabled: false }, { mode: 'auto' }], 'auto'],
+      [[{ enabled: false }, { mode: 'auto' }], 'off'],
+      [[{ mode: 'on' }, { mode: 'auto' }], 'off'],
+      [[{ mode: 'auto' }, { mode: 'on' }], 'on'],
       [[{ mode: 'auto' }, { mode: 'off' }], 'off'],
-      [[], 'auto'],
+      [[{ mode: 'auto', enabled: true }], 'off'],
+      [[{ mode: 'invalid' }], 'off'],
+      [[{}], 'off'],
+      [[], 'off'],
     ]) {
       branch = history.map(data => ({ type: 'custom', customType: 'pi-delegate-mode', data }));
       for (const handler of extension.handlers.get('session_start')) await handler({}, ctx);
@@ -80,13 +87,17 @@ test('selective mode is the default and restores current and legacy branch state
       assert.match(policy, new RegExp(`Delegate mode is ${expected.toUpperCase()}`));
       assert.match(policy, /Workers must execute directly; they may not spawn subagents or delegate further/);
       assert.match(policy, /Handle explicitly user-requested subagent orchestration in the parent/);
-      if (expected === 'auto') {
-        assert.match(policy, /Work directly on small, clearly scoped tasks/);
-        assert.match(policy, /substantial implementation, broad investigation, or work the user explicitly wants running in the background/);
-        assert.match(policy, /If scope or permissions are unclear, ask before launching/);
+      assert.doesNotMatch(policy, /Delegate mode is AUTO/);
+      const historyBeforeInvalidCommand = structuredClone(branch);
+      await assert.rejects(command('auto', ctx), /Use \/delegate on\|off\|status/);
+      assert.deepEqual(branch, historyBeforeInvalidCommand, 'removed mode must not persist or change state');
+      await command('status', ctx);
+      assert.equal(notices.at(-1), `Delegate ${expected}. Running: none.`);
+      if (expected === 'off') {
+        await assert.rejects(tool.execute('disabled', {}, undefined, undefined, ctx), /Delegate is off/);
       }
     }
-    for (const mode of ['on', 'off', 'auto']) {
+    for (const mode of ['on', 'off']) {
       await command(mode, ctx);
       assert.deepEqual(branch.at(-1).data, { mode });
       const reloaded = await loadExtensions([entryPath], root);
@@ -135,10 +146,12 @@ test('Pi loader, global mode, pointer-only tool, notification, shutdown, and chi
     const emit = async name => { for (const fn of extension.handlers.get(name) ?? []) await fn({}, ctx); };
     await emit('session_start');
     const command = extension.commands.get('delegate').handler;
-    await assert.rejects(command('invalid', ctx), /Use \/delegate auto\|on\|off\|status or \/delegate cancel/);
+    await assert.rejects(command('invalid', ctx), /Use \/delegate on\|off\|status or \/delegate cancel/);
     await command('status', ctx);
-    assert.match(notices.at(-1)[0], /^Delegate auto\./);
+    assert.match(notices.at(-1)[0], /^Delegate off\./);
     const tool = extension.tools.get('delegate').definition;
+    await assert.rejects(tool.execute('default-off', {}, undefined, undefined, ctx), /Delegate is off/);
+    await command('on', ctx);
     const { normalizeBuildSystemPromptOptions, buildSystemPromptSections, diffSystemPromptSections } =
       await import(pathToFileURL(join(piPackage, 'dist/core/system-prompt.js')));
     const policyHandler = extension.handlers.get('before_agent_start')[0];
@@ -191,7 +204,7 @@ test('Pi loader, global mode, pointer-only tool, notification, shutdown, and chi
     await assert.rejects(tool.execute('t', {}, undefined, undefined, ctx), /off/);
     await emit('session_start'); // Restores persisted off mode.
     await assert.rejects(tool.execute('t', {}, undefined, undefined, ctx), /off/);
-    await command('auto', ctx);
+    await command('on', ctx);
     policyHandler(promptEvent, policyContext);
     assert.equal(promptEvent.systemPromptOptions.sections.pi_delegate_policy, policy);
     const changedSession = { ...policyContext, sessionManager: { ...policyContext.sessionManager,
@@ -200,13 +213,11 @@ test('Pi loader, global mode, pointer-only tool, notification, shutdown, and chi
     assert.ok(promptEvent.systemPromptOptions.sections.pi_delegate_policy.includes(JSON.stringify(join(root, 'other.jsonl'))));
     assert.ok(!promptEvent.systemPromptOptions.sections.pi_delegate_policy.includes(JSON.stringify(sessionFile)));
     policyHandler(promptEvent, policyContext);
-    for (const mode of ['auto', 'on']) {
-      await command(mode, ctx);
-      const cancelledLaunch = tool.execute('race', {}, undefined, undefined, ctx);
-      await command('off', ctx);
-      await assert.rejects(cancelledLaunch, /cancelled before launch/);
-    }
-    await command('auto', ctx);
+    await command('on', ctx);
+    const cancelledLaunch = tool.execute('race', {}, undefined, undefined, ctx);
+    await command('off', ctx);
+    await assert.rejects(cancelledLaunch, /cancelled before launch/);
+    await command('on', ctx);
     const result = await tool.execute('t', {}, undefined, undefined, ctx);
     assert.equal(result.details.pointer.messageId, 'request');
     assert.ok(!JSON.stringify(result).includes('private synthetic task text'));

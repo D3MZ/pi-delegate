@@ -33,12 +33,9 @@ Pi's supplied peer packages.
 
 ## Controls
 
-- `/delegate auto` — selective delegation (initial setting): work directly on small,
-  clearly scoped tasks; delegate substantial implementation, broad investigation,
-  or explicitly background work. Ask first if scope or permissions are unclear.
-- `/delegate on` — delegate execution requests by default.
-- `/delegate off` — work directly; the tool rejects new launches. Explicitly requested
-  subagents through other installed tools remain allowed.
+- `/delegate on` — enable delegation for execution requests.
+- `/delegate off` — work directly (initial setting); the tool rejects new launches.
+  Explicitly requested subagents through other installed tools remain allowed.
 - `/delegate status` — show mode and currently running worker IDs.
 - `/delegate cancel <worker-id>` or `/delegate cancel all` — stop workers.
 
@@ -46,15 +43,14 @@ Pi's supplied peer packages.
 The legacy `/delegation` alias has been removed.
 
 The mode is saved in the current session and restored on reload, including older
-saved on/off choices. Turning it off does not cancel existing workers. Routing is
-an instruction to the parent model, not automatic dispatch or a task-size detector.
-Questions and review discussion remain in the parent conversation.
+saved on/off choices. New sessions start off. The former `auto` mode is no longer
+accepted; saved `auto` choices restore as off. Turning it off does not cancel
+existing workers. Routing when on is an instruction to the parent model, not
+automatic dispatch. Questions and review discussion remain in the parent
+conversation.
 
-In auto mode, a small task such as adding one rule to `AGENTS.md` stays in the
-parent through editing, relevant checks, and the task-scoped commit. Substantial
-work goes to a background worker. Honor explicit requests to work directly.
-Both paths follow the project's validation, commit, and push-approval rules.
-Explicitly requested subagent orchestration stays in the parent in every mode;
+Both modes follow the project's validation, commit, and push-approval rules.
+Explicitly requested subagent orchestration stays in the parent in either mode;
 workers may not spawn subagents themselves.
 
 The policy lives in a named system-prompt section, not a new chat entry each turn.

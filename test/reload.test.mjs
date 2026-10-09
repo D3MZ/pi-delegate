@@ -35,6 +35,8 @@ test('reload refreshes worker and pointer dependencies in the same Pi process',
       assert.deepEqual(loaded.errors, []);
       const notification = new Promise(resolve => { loaded.runtime.sendMessage = resolve; });
       const ctx = { cwd: root, sessionManager: { getSessionFile: () => sessionFile, getBranch: () => [] }, ui: { notify() {} } };
+      loaded.runtime.appendEntry = () => {};
+      await loaded.extensions[0].commands.get('delegate').handler('on', ctx);
       await loaded.extensions[0].tools.get('delegate').definition.execute('test', {}, undefined, undefined, ctx);
       assert.equal((await notification).content, version);
     }
